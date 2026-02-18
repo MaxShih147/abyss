@@ -26,6 +26,8 @@ const markerObjects = new Map<string, THREE.Object3D>()
 const markerGroup = new THREE.Group()
 // The loaded STL mesh reference for raycasting
 let loadedMesh: THREE.Mesh | null = null
+// Result mesh overlay
+let resultMesh: THREE.Mesh | null = null
 
 function initScene() {
   const container = canvasContainer.value!
@@ -378,8 +380,12 @@ function animate() {
 function loadSTL(file: File) {
   const reader = new FileReader()
   reader.onload = (e) => {
+    const arrayBuffer = e.target!.result as ArrayBuffer
+    // Save raw bytes for sending to server
+    store.stlArrayBuffer = arrayBuffer.slice(0)
+
     const loader = new STLLoader()
-    const geometry = loader.parse(e.target!.result as ArrayBuffer)
+    const geometry = loader.parse(arrayBuffer)
 
     // Remove old mesh
     if (loadedMesh) {
@@ -436,8 +442,53 @@ function clearMarkers() {
   store.clearAll()
 }
 
+function displayResult(buffer: ArrayBuffer) {
+  // Remove old result if any
+  clearResult()
+
+  const loader = new STLLoader()
+  const geometry = loader.parse(buffer)
+  geometry.computeVertexNormals()
+
+  const material = new THREE.MeshStandardMaterial({
+    color: 0x00e0c4,
+    emissive: 0x00e0c4,
+    emissiveIntensity: 0.6,
+    metalness: 0.4,
+    roughness: 0.3,
+    transparent: true,
+    opacity: 0.9,
+  })
+
+  resultMesh = new THREE.Mesh(geometry, material)
+  scene.add(resultMesh)
+
+  // Fade original mesh to 15% opacity
+  if (loadedMesh) {
+    const mat = loadedMesh.material as THREE.MeshStandardMaterial
+    mat.transparent = true
+    mat.opacity = 0.15
+    mat.needsUpdate = true
+  }
+}
+
+function clearResult() {
+  if (resultMesh) {
+    scene.remove(resultMesh)
+    disposeObject(resultMesh)
+    resultMesh = null
+  }
+  // Restore original mesh opacity
+  if (loadedMesh) {
+    const mat = loadedMesh.material as THREE.MeshStandardMaterial
+    mat.transparent = false
+    mat.opacity = 1.0
+    mat.needsUpdate = true
+  }
+}
+
 // Expose for parent
-defineExpose({ loadSTL, clearMarkers })
+defineExpose({ loadSTL, clearMarkers, displayResult, clearResult })
 
 onMounted(() => {
   initScene()

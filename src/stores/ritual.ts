@@ -15,12 +15,55 @@ export interface LoadVector {
   magnitude: number
 }
 
+export interface SolverParams {
+  nelx: number
+  nely: number
+  nelz: number
+  penal: number
+  rmin: number
+  maxIterations: number
+}
+
+export interface OptimizationState {
+  isRunning: boolean
+  jobId: string | null
+  progress: {
+    iteration: number
+    maxIterations: number
+    objective: number
+    volumeFraction: number
+    change: number
+    elapsedSeconds: number
+  } | null
+  error: string | null
+  isComplete: boolean
+}
+
 export const useRitualStore = defineStore('ritual', () => {
   const mode = ref<'fixed' | 'load'>('fixed')
   const fixedSupports = ref<FixedSupport[]>([])
   const loadVectors = ref<LoadVector[]>([])
   const stlMesh = shallowRef<THREE.Mesh | null>(null)
   const volumeFraction = ref(0.3)
+
+  const solverParams = ref<SolverParams>({
+    nelx: 60,
+    nely: 20,
+    nelz: 10,
+    penal: 3.0,
+    rmin: 1.5,
+    maxIterations: 80,
+  })
+
+  const optimization = ref<OptimizationState>({
+    isRunning: false,
+    jobId: null,
+    progress: null,
+    error: null,
+    isComplete: false,
+  })
+
+  const stlArrayBuffer = shallowRef<ArrayBuffer | null>(null)
 
   let nextId = 0
   function genId() {
@@ -60,16 +103,30 @@ export const useRitualStore = defineStore('ritual', () => {
     loadVectors.value = []
   }
 
+  function resetOptimization() {
+    optimization.value = {
+      isRunning: false,
+      jobId: null,
+      progress: null,
+      error: null,
+      isComplete: false,
+    }
+  }
+
   return {
     mode,
     fixedSupports,
     loadVectors,
     stlMesh,
     volumeFraction,
+    solverParams,
+    optimization,
+    stlArrayBuffer,
     setMode,
     addFixedSupport,
     addLoadVector,
     removeMarker,
     clearAll,
+    resetOptimization,
   }
 })

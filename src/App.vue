@@ -2,14 +2,28 @@
 import { ref, computed } from 'vue'
 import AbyssCanvas from './components/AbyssCanvas.vue'
 import { useRitualStore } from './stores/ritual'
+import { submitOptimization, streamProgress, fetchResult, type ProgressData } from './services/api'
 
 const store = useRitualStore()
 const canvasRef = ref<InstanceType<typeof AbyssCanvas>>()
 const fileInput = ref<HTMLInputElement>()
 const isDragging = ref(false)
 const panelCollapsed = ref(false)
+const solverOpen = ref(false)
+let stopStream: (() => void) | null = null
 
 const totalMarkers = computed(() => store.fixedSupports.length + store.loadVectors.length)
+const canRun = computed(() =>
+  store.stlArrayBuffer !== null &&
+  store.fixedSupports.length > 0 &&
+  store.loadVectors.length > 0 &&
+  !store.optimization.isRunning
+)
+const progressPct = computed(() => {
+  const p = store.optimization.progress
+  if (!p) return 0
+  return Math.round((p.iteration / p.maxIterations) * 100)
+})
 
 function onLoadSTL() {
   fileInput.value?.click()
@@ -43,6 +57,99 @@ function onDrop(e: DragEvent) {
   const file = e.dataTransfer?.files[0]
   if (file && file.name.toLowerCase().endsWith('.stl')) {
     canvasRef.value?.loadSTL(file)
+  }
+}
+
+async function onRunOptimization() {
+  if (!canRun.value || !store.stlArrayBuffer) return
+
+  store.resetOptimization()
+  store.optimization.isRunning = true
+
+  const params = {
+    fixed_supports: store.fixedSupports.map(s => ({
+      position: { x: s.position.x, y: s.position.y, z: s.position.z },
+      normal: { x: s.normal.x, y: s.normal.y, z: s.normal.z },
+    })),
+    load_vectors: store.loadVectors.map(l => ({
+      position: { x: l.position.x, y: l.position.y, z: l.position.z },
+      direction: { x: l.direction.x, y: l.direction.y, z: l.direction.z },
+      magnitude: l.magnitude,
+    })),
+    volume_fraction: store.volumeFraction,
+    nelx: store.solverParams.nelx,
+    nely: store.solverParams.nely,
+    nelz: store.solverParams.nelz,
+    penal: store.solverParams.penal,
+    rmin: store.solverParams.rmin,
+    max_iterations: store.solverParams.maxIterations,
+  }
+
+  try {
+    const { job_id } = await submitOptimization(store.stlArrayBuffer, params)
+    store.optimization.jobId = job_id
+
+    stopStream = streamProgress(
+      job_id,
+      (data: ProgressData) => {
+        store.optimization.progress = {
+          iteration: data.iteration,
+          maxIterations: data.max_iterations,
+          objective: data.objective,
+          volumeFraction: data.volume_fraction,
+          change: data.change,
+          elapsedSeconds: data.elapsed_seconds,
+        }
+      },
+      async () => {
+        store.optimization.isRunning = false
+        store.optimization.isComplete = true
+        // Fetch and display result
+        try {
+          const resultBuffer = await fetchResult(job_id)
+          canvasRef.value?.displayResult(resultBuffer)
+        } catch (err) {
+          store.optimization.error = 'Failed to fetch result'
+        }
+      },
+      (msg: string) => {
+        store.optimization.isRunning = false
+        store.optimization.error = msg
+      },
+    )
+  } catch (err) {
+    store.optimization.isRunning = false
+    store.optimization.error = err instanceof Error ? err.message : 'Submit failed'
+  }
+}
+
+function onCancelOptimization() {
+  if (stopStream) {
+    stopStream()
+    stopStream = null
+  }
+  store.optimization.isRunning = false
+  store.optimization.error = 'Cancelled'
+}
+
+function onClearResult() {
+  canvasRef.value?.clearResult()
+  store.resetOptimization()
+}
+
+async function onDownloadResult() {
+  if (!store.optimization.jobId) return
+  try {
+    const buffer = await fetchResult(store.optimization.jobId)
+    const blob = new Blob([buffer], { type: 'application/octet-stream' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = 'optimized.stl'
+    a.click()
+    URL.revokeObjectURL(url)
+  } catch {
+    // ignore
   }
 }
 </script>
@@ -155,7 +262,119 @@ function onDrop(e: DragEvent) {
           </div>
         </div>
 
-        <!-- Actions -->
+        <!-- Solver Settings (collapsible) -->
+        <div class="section">
+          <button class="section-toggle" @click="solverOpen = !solverOpen">
+            <span class="section-label" style="pointer-events: none">Solver Settings</span>
+            <svg :class="['toggle-chevron', { open: solverOpen }]" width="12" height="12" viewBox="0 0 12 12" fill="none">
+              <path d="M3 4.5l3 3 3-3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+          </button>
+          <div v-show="solverOpen" class="solver-fields">
+            <div class="field-row">
+              <label class="field-label">Grid</label>
+              <div class="field-inputs-triple">
+                <input type="number" v-model.number="store.solverParams.nelx" min="4" max="200" class="field-input" title="nelx" />
+                <span class="field-sep">&times;</span>
+                <input type="number" v-model.number="store.solverParams.nely" min="4" max="200" class="field-input" title="nely" />
+                <span class="field-sep">&times;</span>
+                <input type="number" v-model.number="store.solverParams.nelz" min="4" max="200" class="field-input" title="nelz" />
+              </div>
+            </div>
+            <div class="field-row">
+              <label class="field-label">Penalization <span class="field-val">{{ store.solverParams.penal.toFixed(1) }}</span></label>
+              <div class="slider-wrap">
+                <input type="range" min="1.0" max="5.0" step="0.1" v-model.number="store.solverParams.penal" class="slider" />
+                <div class="slider-track">
+                  <div class="slider-fill" :style="{ width: ((store.solverParams.penal - 1) / 4 * 100) + '%' }"></div>
+                </div>
+              </div>
+            </div>
+            <div class="field-row">
+              <label class="field-label">Filter Radius <span class="field-val">{{ store.solverParams.rmin.toFixed(1) }}</span></label>
+              <div class="slider-wrap">
+                <input type="range" min="1.0" max="5.0" step="0.1" v-model.number="store.solverParams.rmin" class="slider" />
+                <div class="slider-track">
+                  <div class="slider-fill" :style="{ width: ((store.solverParams.rmin - 1) / 4 * 100) + '%' }"></div>
+                </div>
+              </div>
+            </div>
+            <div class="field-row">
+              <label class="field-label">Max Iterations</label>
+              <input type="number" v-model.number="store.solverParams.maxIterations" min="1" max="2000" class="field-input field-input-wide" />
+            </div>
+          </div>
+        </div>
+
+        <!-- Run / Cancel -->
+        <div class="section actions">
+          <button
+            v-if="!store.optimization.isRunning"
+            class="btn btn-primary"
+            :disabled="!canRun"
+            @click="onRunOptimization"
+          >
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+              <path d="M4 2l10 6-10 6V2z" fill="currentColor"/>
+            </svg>
+            Run Optimization
+          </button>
+          <button
+            v-else
+            class="btn btn-cancel"
+            @click="onCancelOptimization"
+          >
+            Cancel
+          </button>
+        </div>
+
+        <!-- Progress display -->
+        <div v-if="store.optimization.isRunning || store.optimization.progress" class="section progress-section">
+          <div class="progress-bar-wrap">
+            <div class="progress-bar">
+              <div class="progress-fill" :style="{ width: progressPct + '%' }"></div>
+            </div>
+            <span class="progress-label">{{ progressPct }}%</span>
+          </div>
+          <div v-if="store.optimization.progress" class="progress-stats">
+            <div class="stat-row">
+              <span class="stat-key">Iteration</span>
+              <span class="stat-val">{{ store.optimization.progress.iteration }} / {{ store.optimization.progress.maxIterations }}</span>
+            </div>
+            <div class="stat-row">
+              <span class="stat-key">Objective</span>
+              <span class="stat-val">{{ store.optimization.progress.objective.toFixed(4) }}</span>
+            </div>
+            <div class="stat-row">
+              <span class="stat-key">Convergence</span>
+              <span class="stat-val">{{ store.optimization.progress.change.toFixed(6) }}</span>
+            </div>
+            <div class="stat-row">
+              <span class="stat-key">Elapsed</span>
+              <span class="stat-val">{{ store.optimization.progress.elapsedSeconds.toFixed(1) }}s</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Error -->
+        <div v-if="store.optimization.error" class="section error-msg">
+          {{ store.optimization.error }}
+        </div>
+
+        <!-- Result controls -->
+        <div v-if="store.optimization.isComplete" class="section actions">
+          <button class="btn btn-primary" @click="onDownloadResult">
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+              <path d="M2 10v3a1 1 0 001 1h10a1 1 0 001-1v-3M8 2v8M5 7l3 3 3-3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+            Download STL
+          </button>
+          <button class="btn btn-ghost" @click="onClearResult">
+            Clear Result
+          </button>
+        </div>
+
+        <!-- File actions -->
         <div class="section actions">
           <button class="btn btn-primary" @click="onLoadSTL">
             <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
@@ -602,6 +821,96 @@ function onDrop(e: DragEvent) {
   margin-top: 2px;
 }
 
+/* ============ SOLVER SETTINGS ============ */
+.section-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  padding: 0;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  color: inherit;
+}
+
+.toggle-chevron {
+  color: var(--text-tertiary);
+  transition: transform var(--transition);
+}
+
+.toggle-chevron.open {
+  transform: rotate(180deg);
+}
+
+.solver-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.field-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.field-label {
+  font-size: 10px;
+  color: var(--text-tertiary);
+  font-weight: 400;
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+}
+
+.field-val {
+  color: var(--accent-cyan);
+  font-family: var(--font-display);
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.field-inputs-triple {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.field-sep {
+  color: var(--text-tertiary);
+  font-size: 11px;
+}
+
+.field-input {
+  width: 100%;
+  min-width: 0;
+  padding: 6px 8px;
+  background: var(--bg-control);
+  border: 1px solid var(--border-glass);
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  font-family: var(--font-body);
+  font-size: 12px;
+  outline: none;
+  transition: border-color var(--transition);
+  -moz-appearance: textfield;
+}
+
+.field-input::-webkit-outer-spin-button,
+.field-input::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+.field-input:focus {
+  border-color: rgba(0, 224, 196, 0.3);
+}
+
+.field-input-wide {
+  max-width: 80px;
+}
+
 /* ============ BUTTONS ============ */
 .actions {
   gap: 8px;
@@ -629,10 +938,26 @@ function onDrop(e: DragEvent) {
   color: var(--accent-cyan);
 }
 
-.btn-primary:hover {
+.btn-primary:hover:not(:disabled) {
   background: linear-gradient(135deg, rgba(0, 224, 196, 0.2) 0%, rgba(0, 224, 196, 0.08) 100%);
   border-color: rgba(0, 224, 196, 0.35);
   box-shadow: 0 0 20px rgba(0, 224, 196, 0.1);
+}
+
+.btn-primary:disabled {
+  opacity: 0.3;
+  cursor: not-allowed;
+}
+
+.btn-cancel {
+  background: linear-gradient(135deg, rgba(244, 63, 94, 0.12) 0%, rgba(244, 63, 94, 0.04) 100%);
+  border-color: rgba(244, 63, 94, 0.2);
+  color: var(--accent-rose);
+}
+
+.btn-cancel:hover {
+  background: linear-gradient(135deg, rgba(244, 63, 94, 0.2) 0%, rgba(244, 63, 94, 0.08) 100%);
+  border-color: rgba(244, 63, 94, 0.35);
 }
 
 .btn-ghost {
@@ -649,6 +974,76 @@ function onDrop(e: DragEvent) {
 .btn-ghost:disabled {
   opacity: 0.3;
   cursor: not-allowed;
+}
+
+/* ============ PROGRESS ============ */
+.progress-section {
+  gap: 8px;
+}
+
+.progress-bar-wrap {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.progress-bar {
+  flex: 1;
+  height: 4px;
+  background: rgba(255, 255, 255, 0.06);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.progress-fill {
+  height: 100%;
+  background: linear-gradient(90deg, var(--accent-cyan), rgba(0, 224, 196, 0.6));
+  border-radius: 2px;
+  transition: width 0.3s ease;
+}
+
+.progress-label {
+  font-family: var(--font-display);
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--accent-cyan);
+  min-width: 36px;
+  text-align: right;
+}
+
+.progress-stats {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.stat-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+}
+
+.stat-key {
+  font-size: 10px;
+  color: var(--text-tertiary);
+  font-weight: 400;
+}
+
+.stat-val {
+  font-size: 11px;
+  color: var(--text-secondary);
+  font-family: var(--font-body);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ============ ERROR ============ */
+.error-msg {
+  font-size: 11px;
+  color: var(--accent-rose);
+  padding: 8px 10px;
+  background: rgba(244, 63, 94, 0.06);
+  border: 1px solid rgba(244, 63, 94, 0.15);
+  border-radius: var(--radius-sm);
 }
 
 /* ============ HINT ============ */
