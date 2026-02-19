@@ -47,12 +47,12 @@ export const useRitualStore = defineStore('ritual', () => {
   const volumeFraction = ref(0.3)
 
   const solverParams = ref<SolverParams>({
-    nelx: 60,
-    nely: 20,
-    nelz: 10,
+    nelx: 36,
+    nely: 12,
+    nelz: 8,
     penal: 3.0,
     rmin: 1.5,
-    maxIterations: 80,
+    maxIterations: 50,
   })
 
   const optimization = ref<OptimizationState>({

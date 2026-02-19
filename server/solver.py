@@ -17,7 +17,19 @@ from pytopo3d.core.compliance import element_compliance
 from pytopo3d.utils.assembly import build_edof
 from pytopo3d.utils.filter import build_filter
 from pytopo3d.utils.oc_update import optimality_criteria_update
-from pytopo3d.utils.solver import solver
+
+# Use CHOLMOD (multi-threaded supernodal Cholesky) if available, else scipy
+try:
+    from sksparse.cholmod import cholesky as cholmod_cholesky
+    def _solve_sparse(K, f):
+        factor = cholmod_cholesky(K.tocsc())
+        return factor(f)
+    _solver_name = "CHOLMOD"
+except ImportError:
+    from scipy.sparse.linalg import spsolve as _solve_sparse
+    _solver_name = "SciPy spsolve"
+
+print(f"Abyss solver: using {_solver_name}")
 from pytopo3d.utils.stiffness import lk_H8
 
 from server.models import FixedSupportParam, LoadVectorParam
@@ -217,6 +229,7 @@ def custom_top3d(
 
     # Element stiffness matrix
     KE = lk_H8(nu)
+    KE_flat = KE.ravel()  # 576 values, precompute once
 
     # Element DOF mapping
     edofMat, iK, jK = build_edof(nelx, nely, nelz)
@@ -238,17 +251,17 @@ def custom_top3d(
     while change > tolx and loop < maxloop:
         loop += 1
 
-        # Assemble stiffness
+        # Assemble stiffness (fast: repeat+multiply instead of kron)
         xFlat = xPhys.ravel(order="F")
         stiff_vals = Emin + (xFlat**penal) * (E0 - Emin)
-        sK_full = np.kron(stiff_vals, KE.ravel())
+        sK_full = np.repeat(stiff_vals, 576) * np.tile(KE_flat, nele)
 
         K = sp.csr_matrix((sK_full, (iK0, jK0)), shape=(ndof, ndof))
 
         # Solve
         K_ff = K[freedofs0, :][:, freedofs0]
         F_f = F[freedofs0]
-        U_f = solver(K_ff, F_f)
+        U_f = _solve_sparse(K_ff, F_f)
         U[:] = 0.0
         U[freedofs0] = U_f
 

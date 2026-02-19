@@ -40,7 +40,7 @@ function initScene() {
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2))
   renderer.setClearColor(0x050505)
   renderer.toneMapping = THREE.ACESFilmicToneMapping
-  renderer.toneMappingExposure = 1.0
+  renderer.toneMappingExposure = 1.8
   container.appendChild(renderer.domElement)
 
   // Scene
@@ -59,8 +59,12 @@ function initScene() {
   controls.target.set(0, 0, 0)
 
   // Lighting
-  const ambient = new THREE.AmbientLight(0x222222, 0.5)
+  const ambient = new THREE.AmbientLight(0x666666, 1.0)
   scene.add(ambient)
+
+  const keyLight = new THREE.DirectionalLight(0xffffff, 0.8)
+  keyLight.position.set(5, 10, 7)
+  scene.add(keyLight)
 
   const greenLight = new THREE.PointLight(0x00ff66, 0.8, 50)
   greenLight.position.set(-5, 8, -3)
@@ -81,9 +85,9 @@ function initScene() {
 
   const bloom = new UnrealBloomPass(
     new THREE.Vector2(w, h),
-    1.5,  // strength
+    0.8,  // strength
     0.4,  // radius
-    0.2   // threshold
+    0.6   // threshold
   )
   composer.addPass(bloom)
 
@@ -412,9 +416,11 @@ function loadSTL(file: File) {
     geometry.translate(0, -newBox.min.y, 0)
 
     const material = new THREE.MeshStandardMaterial({
-      color: 0x1a1a2e,
+      color: 0x00e0c4,
+      emissive: 0x00e0c4,
+      emissiveIntensity: 0.6,
       metalness: 0.3,
-      roughness: 0.7,
+      roughness: 0.4,
       flatShading: false,
     })
 
