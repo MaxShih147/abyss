@@ -10,6 +10,9 @@ const fileInput = ref<HTMLInputElement>()
 const isDragging = ref(false)
 const panelCollapsed = ref(false)
 const solverOpen = ref(false)
+const showOriginal = ref(true)
+const showResult = ref(true)
+const showGrid = ref(false)
 let stopStream: (() => void) | null = null
 
 const totalMarkers = computed(() => store.fixedSupports.length + store.loadVectors.length)
@@ -362,16 +365,48 @@ async function onDownloadResult() {
         </div>
 
         <!-- Result controls -->
-        <div v-if="store.optimization.isComplete" class="section actions">
-          <button class="btn btn-primary" @click="onDownloadResult">
-            <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-              <path d="M2 10v3a1 1 0 001 1h10a1 1 0 001-1v-3M8 2v8M5 7l3 3 3-3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
-            </svg>
-            Download STL
-          </button>
-          <button class="btn btn-ghost" @click="onClearResult">
-            Clear Result
-          </button>
+        <div v-if="store.optimization.isComplete" class="section">
+          <div class="section-label">Gaze</div>
+          <div class="eye-toggles">
+            <button
+              :class="['eye-btn', { shut: !showOriginal }]"
+              @click="showOriginal = !showOriginal; canvasRef?.toggleOriginal(showOriginal)"
+              title="Toggle original"
+            >
+              <svg class="eye-icon" viewBox="0 0 32 32" fill="none">
+                <ellipse cx="16" cy="16" rx="13" ry="9" stroke="currentColor" stroke-width="1.5"/>
+                <circle cx="16" cy="16" r="5" stroke="currentColor" stroke-width="1.5"/>
+                <circle cx="16" cy="16" r="2" fill="currentColor"/>
+                <path v-if="!showOriginal" d="M4 28L28 4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+              </svg>
+              <span class="eye-label">Original</span>
+            </button>
+            <button
+              :class="['eye-btn result-eye', { shut: !showResult }]"
+              @click="showResult = !showResult; canvasRef?.toggleResult(showResult)"
+              title="Toggle result"
+            >
+              <svg class="eye-icon" viewBox="0 0 32 32" fill="none">
+                <ellipse cx="16" cy="16" rx="13" ry="9" stroke="currentColor" stroke-width="1.5"/>
+                <circle cx="16" cy="16" r="5" stroke="currentColor" stroke-width="1.5"/>
+                <circle cx="16" cy="16" r="2" fill="currentColor"/>
+                <path class="tendrils" d="M3 16Q1 10 3 7M29 16Q31 10 29 7M3 16Q1 22 3 25M29 16Q31 22 29 25" stroke="currentColor" stroke-width="1" stroke-linecap="round" opacity="0.5"/>
+                <path v-if="!showResult" d="M4 28L28 4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+              </svg>
+              <span class="eye-label">Optimized</span>
+            </button>
+          </div>
+          <div class="actions" style="gap: 8px; margin-top: 6px">
+            <button class="btn btn-primary" @click="onDownloadResult">
+              <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+                <path d="M2 10v3a1 1 0 001 1h10a1 1 0 001-1v-3M8 2v8M5 7l3 3 3-3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+              Download STL
+            </button>
+            <button class="btn btn-ghost" @click="onClearResult">
+              Clear Result
+            </button>
+          </div>
         </div>
 
         <!-- File actions -->
@@ -395,6 +430,19 @@ async function onDownloadResult() {
             :disabled="totalMarkers === 0"
           >
             Clear All
+          </button>
+        </div>
+
+        <!-- Grid toggle -->
+        <div class="section">
+          <button
+            :class="['grid-toggle', { active: showGrid }]"
+            @click="showGrid = !showGrid; canvasRef?.toggleGrid(showGrid)"
+          >
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+              <path d="M1 4h14M1 8h14M1 12h14M4 1v14M8 1v14M12 1v14" stroke="currentColor" stroke-width="1" stroke-opacity="0.6"/>
+            </svg>
+            <span>Grid</span>
           </button>
         </div>
 
@@ -1044,6 +1092,95 @@ async function onDownloadResult() {
   background: rgba(244, 63, 94, 0.06);
   border: 1px solid rgba(244, 63, 94, 0.15);
   border-radius: var(--radius-sm);
+}
+
+/* ============ GRID TOGGLE ============ */
+.grid-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border: 1px solid var(--border-glass);
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--text-tertiary);
+  cursor: pointer;
+  font-family: var(--font-body);
+  font-size: 11px;
+  letter-spacing: 0.5px;
+  transition: all var(--transition);
+}
+
+.grid-toggle:hover {
+  border-color: rgba(0, 224, 196, 0.15);
+  color: var(--text-secondary);
+}
+
+.grid-toggle.active {
+  border-color: rgba(0, 224, 196, 0.2);
+  color: var(--accent-cyan);
+  background: rgba(0, 224, 196, 0.04);
+}
+
+/* ============ EYE TOGGLES ============ */
+.eye-toggles {
+  display: flex;
+  gap: 8px;
+}
+
+.eye-btn {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 8px;
+  border: 1px solid var(--border-glass);
+  border-radius: var(--radius-md);
+  background: var(--bg-control);
+  cursor: pointer;
+  transition: all var(--transition);
+  color: var(--accent-cyan);
+}
+
+.eye-btn:hover {
+  border-color: rgba(0, 224, 196, 0.2);
+  background: var(--bg-control-active);
+}
+
+.eye-btn.shut {
+  color: var(--text-tertiary);
+  opacity: 0.5;
+}
+
+.eye-btn.result-eye {
+  color: #00ffaa;
+}
+
+.eye-btn.result-eye.shut {
+  color: var(--text-tertiary);
+}
+
+.eye-icon {
+  width: 28px;
+  height: 28px;
+  filter: drop-shadow(0 0 4px currentColor);
+  transition: filter var(--transition);
+}
+
+.eye-btn:hover .eye-icon {
+  filter: drop-shadow(0 0 8px currentColor);
+}
+
+.eye-btn.shut .eye-icon {
+  filter: none;
+}
+
+.eye-label {
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  font-weight: 400;
 }
 
 /* ============ HINT ============ */

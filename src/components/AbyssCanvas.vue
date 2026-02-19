@@ -10,6 +10,7 @@ import { useRitualStore } from '@/stores/ritual'
 
 const store = useRitualStore()
 const canvasContainer = ref<HTMLDivElement>()
+const gizmoContainer = ref<HTMLDivElement>()
 
 let renderer: THREE.WebGLRenderer
 let camera: THREE.PerspectiveCamera
@@ -19,6 +20,14 @@ let composer: EffectComposer
 let raycaster: THREE.Raycaster
 let mouse: THREE.Vector2
 let animationId: number
+let gridHelper: THREE.GridHelper
+
+// Gizmo
+let gizmoRenderer: THREE.WebGLRenderer
+let gizmoScene: THREE.Scene
+let gizmoCamera: THREE.OrthographicCamera
+let gizmoCube: THREE.Mesh
+let gizmoRaycaster: THREE.Raycaster
 
 // Track 3D objects mapped by marker ID
 const markerObjects = new Map<string, THREE.Object3D>()
@@ -40,7 +49,7 @@ function initScene() {
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2))
   renderer.setClearColor(0x050505)
   renderer.toneMapping = THREE.ACESFilmicToneMapping
-  renderer.toneMappingExposure = 1.8
+  renderer.toneMappingExposure = 1.2
   container.appendChild(renderer.domElement)
 
   // Scene
@@ -74,10 +83,11 @@ function initScene() {
   purpleLight.position.set(5, 6, 5)
   scene.add(purpleLight)
 
-  // Grid
-  const grid = new THREE.GridHelper(20, 40, 0x0a3a1a, 0x061a0e)
-  grid.position.y = -0.01
-  scene.add(grid)
+  // Grid (default off)
+  gridHelper = new THREE.GridHelper(20, 40, 0x0a3a1a, 0x061a0e)
+  gridHelper.position.y = -0.01
+  gridHelper.visible = false
+  scene.add(gridHelper)
 
   // Post-processing
   composer = new EffectComposer(renderer)
@@ -98,6 +108,113 @@ function initScene() {
   // Events
   renderer.domElement.addEventListener('click', onClick)
   window.addEventListener('resize', onResize)
+
+  // === Gizmo Cube ===
+  initGizmo()
+}
+
+function makeGizmoFaceTexture(label: string, color: string, bgColor: string): THREE.CanvasTexture {
+  const size = 128
+  const canvas = document.createElement('canvas')
+  canvas.width = size
+  canvas.height = size
+  const ctx = canvas.getContext('2d')!
+  // Background
+  ctx.fillStyle = bgColor
+  ctx.fillRect(0, 0, size, size)
+  // Border
+  ctx.strokeStyle = color
+  ctx.lineWidth = 3
+  ctx.strokeRect(2, 2, size - 4, size - 4)
+  // Label
+  ctx.fillStyle = color
+  ctx.font = 'bold 36px Cormorant Garamond, Georgia, serif'
+  ctx.textAlign = 'center'
+  ctx.textBaseline = 'middle'
+  ctx.fillText(label, size / 2, size / 2)
+  const tex = new THREE.CanvasTexture(canvas)
+  tex.needsUpdate = true
+  return tex
+}
+
+function initGizmo() {
+  const el = gizmoContainer.value!
+  const size = 120
+
+  gizmoRenderer = new THREE.WebGLRenderer({ antialias: true, alpha: true })
+  gizmoRenderer.setSize(size, size)
+  gizmoRenderer.setPixelRatio(Math.min(window.devicePixelRatio, 2))
+  gizmoRenderer.setClearColor(0x000000, 0)
+  el.appendChild(gizmoRenderer.domElement)
+
+  gizmoScene = new THREE.Scene()
+  gizmoCamera = new THREE.OrthographicCamera(-1.8, 1.8, 1.8, -1.8, 0.1, 100)
+  gizmoCamera.position.set(3, 3, 3)
+  gizmoCamera.lookAt(0, 0, 0)
+
+  // Cthulhu-themed face labels & colors
+  const faces = [
+    { label: 'R', color: '#ff4466', bg: 'rgba(40,8,16,0.9)' },   // +X
+    { label: 'L', color: '#ff4466', bg: 'rgba(40,8,16,0.9)' },   // -X
+    { label: 'T', color: '#00e0c4', bg: 'rgba(8,32,28,0.9)' },   // +Y
+    { label: 'B', color: '#00e0c4', bg: 'rgba(8,32,28,0.9)' },   // -Y
+    { label: 'F', color: '#a855f7', bg: 'rgba(24,8,40,0.9)' },   // +Z
+    { label: 'K', color: '#a855f7', bg: 'rgba(24,8,40,0.9)' },   // -Z
+  ]
+  const materials = faces.map(f =>
+    new THREE.MeshBasicMaterial({ map: makeGizmoFaceTexture(f.label, f.color, f.bg) })
+  )
+
+  gizmoCube = new THREE.Mesh(new THREE.BoxGeometry(1.4, 1.4, 1.4), materials)
+  gizmoScene.add(gizmoCube)
+
+  // Ambient light for the gizmo
+  gizmoScene.add(new THREE.AmbientLight(0xffffff, 1))
+
+  gizmoRaycaster = new THREE.Raycaster()
+  gizmoRenderer.domElement.addEventListener('click', onGizmoClick)
+}
+
+function onGizmoClick(event: MouseEvent) {
+  const rect = gizmoRenderer.domElement.getBoundingClientRect()
+  const mouse2 = new THREE.Vector2(
+    ((event.clientX - rect.left) / rect.width) * 2 - 1,
+    -((event.clientY - rect.top) / rect.height) * 2 + 1,
+  )
+  gizmoRaycaster.setFromCamera(mouse2, gizmoCamera)
+  const hits = gizmoRaycaster.intersectObject(gizmoCube)
+  if (hits.length === 0) return
+
+  const faceIndex = hits[0].face!.materialIndex
+  const dist = camera.position.distanceTo(controls.target)
+  const target = controls.target.clone()
+
+  // Snap camera to face direction
+  const dirs: THREE.Vector3[] = [
+    new THREE.Vector3(1, 0, 0),   // 0: +X (R)
+    new THREE.Vector3(-1, 0, 0),  // 1: -X (L)
+    new THREE.Vector3(0, 1, 0),   // 2: +Y (T)
+    new THREE.Vector3(0, -1, 0),  // 3: -Y (B)
+    new THREE.Vector3(0, 0, 1),   // 4: +Z (F)
+    new THREE.Vector3(0, 0, -1),  // 5: -Z (K)
+  ]
+  const dir = dirs[faceIndex]
+  const newPos = target.clone().addScaledVector(dir, dist)
+
+  // Smooth transition
+  const startPos = camera.position.clone()
+  const startTime = performance.now()
+  const duration = 400
+
+  function animateSnap() {
+    const t = Math.min((performance.now() - startTime) / duration, 1)
+    const ease = 1 - Math.pow(1 - t, 3) // easeOutCubic
+    camera.position.lerpVectors(startPos, newPos, ease)
+    camera.lookAt(target)
+    controls.update()
+    if (t < 1) requestAnimationFrame(animateSnap)
+  }
+  animateSnap()
 }
 
 function onResize() {
@@ -379,6 +496,12 @@ function animate() {
   })
 
   composer.render()
+
+  // Sync gizmo cube rotation with main camera
+  if (gizmoCube && gizmoCamera) {
+    gizmoCube.quaternion.copy(camera.quaternion).invert()
+    gizmoRenderer.render(gizmoScene, gizmoCamera)
+  }
 }
 
 function loadSTL(file: File) {
@@ -419,8 +542,8 @@ function loadSTL(file: File) {
       color: 0x00e0c4,
       emissive: 0x00e0c4,
       emissiveIntensity: 0.6,
-      metalness: 0.3,
-      roughness: 0.4,
+      metalness: 0.2,
+      roughness: 0.5,
       flatShading: false,
     })
 
@@ -493,8 +616,20 @@ function clearResult() {
   }
 }
 
+function toggleOriginal(visible: boolean) {
+  if (loadedMesh) loadedMesh.visible = visible
+}
+
+function toggleResult(visible: boolean) {
+  if (resultMesh) resultMesh.visible = visible
+}
+
+function toggleGrid(visible: boolean) {
+  if (gridHelper) gridHelper.visible = visible
+}
+
 // Expose for parent
-defineExpose({ loadSTL, clearMarkers, displayResult, clearResult })
+defineExpose({ loadSTL, clearMarkers, displayResult, clearResult, toggleOriginal, toggleResult, toggleGrid })
 
 onMounted(() => {
   initScene()
@@ -512,11 +647,15 @@ onBeforeUnmount(() => {
   if (loadedMesh) disposeObject(loadedMesh)
   renderer.dispose()
   composer.dispose()
+  gizmoRenderer?.domElement.removeEventListener('click', onGizmoClick)
+  gizmoRenderer?.dispose()
 })
 </script>
 
 <template>
-  <div ref="canvasContainer" class="abyss-canvas"></div>
+  <div ref="canvasContainer" class="abyss-canvas">
+    <div ref="gizmoContainer" class="gizmo-wrap"></div>
+  </div>
 </template>
 
 <style scoped>
@@ -527,5 +666,18 @@ onBeforeUnmount(() => {
 }
 .abyss-canvas canvas {
   display: block;
+}
+.gizmo-wrap {
+  position: absolute;
+  top: 16px;
+  right: 16px;
+  width: 120px;
+  height: 120px;
+  border-radius: 12px;
+  overflow: hidden;
+  border: 1px solid rgba(168, 85, 247, 0.15);
+  background: rgba(4, 4, 7, 0.5);
+  cursor: pointer;
+  z-index: 10;
 }
 </style>

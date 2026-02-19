@@ -78,7 +78,7 @@ def prepare_optimization(
     dx = (bbox_max[0] - bbox_min[0]) / nelx
     dy = (bbox_max[1] - bbox_min[1]) / nely
     dz = (bbox_max[2] - bbox_min[2]) / nelz
-    pitch = min(dx, dy, dz)
+    pitch = max(dx, dy, dz)
 
     # 2. Build voxel grid and obstacle mask
     # Element centers in world coords
@@ -224,6 +224,12 @@ def custom_top3d(
     ndof = 3 * (nelx + 1) * (nely + 1) * (nelz + 1)
 
     design_nele = nele - np.count_nonzero(obstacle_mask)
+    if design_nele == 0:
+        raise ValueError("No design elements — entire mesh is outside the grid")
+    if len(freedofs0) == 0:
+        raise ValueError("No free DOFs — check that fixed supports don't lock everything")
+    if np.count_nonzero(F) == 0:
+        raise ValueError("No loads applied — check load vector placement")
 
     U = np.zeros(ndof)
 
