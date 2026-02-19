@@ -6,6 +6,7 @@ import { STLLoader } from 'three/examples/jsm/loaders/STLLoader.js'
 import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js'
 import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js'
 import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js'
+import { SSAOPass } from 'three/examples/jsm/postprocessing/SSAOPass.js'
 import { useRitualStore } from '@/stores/ritual'
 
 const store = useRitualStore()
@@ -17,6 +18,7 @@ let camera: THREE.PerspectiveCamera
 let scene: THREE.Scene
 let controls: OrbitControls
 let composer: EffectComposer
+let ssaoPass: InstanceType<typeof SSAOPass>
 let raycaster: THREE.Raycaster
 let mouse: THREE.Vector2
 let animationId: number
@@ -57,7 +59,9 @@ function initScene() {
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2))
   renderer.setClearColor(0x050505)
   renderer.toneMapping = THREE.ACESFilmicToneMapping
-  renderer.toneMappingExposure = 1.2
+  renderer.toneMappingExposure = 1.3
+  renderer.shadowMap.enabled = true
+  renderer.shadowMap.type = THREE.PCFSoftShadowMap
   container.appendChild(renderer.domElement)
 
   // Scene
@@ -75,21 +79,37 @@ function initScene() {
   controls.dampingFactor = 0.08
   controls.target.set(0, 0, 0)
 
-  // Lighting
-  const ambient = new THREE.AmbientLight(0x666666, 1.0)
+  // Lighting — deep cavern with dramatic contrast
+  const ambient = new THREE.AmbientLight(0x1a1e20, 0.5)
   scene.add(ambient)
 
-  const keyLight = new THREE.DirectionalLight(0xffffff, 0.8)
-  keyLight.position.set(5, 10, 7)
-  scene.add(keyLight)
+  // Key spotlight from above — sharp shadows, dramatic contrast
+  const spotLight = new THREE.SpotLight(0xd4cfc0, 3.0, 50, Math.PI / 5, 0.5, 1)
+  spotLight.position.set(2, 12, 3)
+  spotLight.castShadow = true
+  spotLight.shadow.mapSize.width = 1024
+  spotLight.shadow.mapSize.height = 1024
+  spotLight.shadow.camera.near = 0.5
+  spotLight.shadow.camera.far = 50
+  spotLight.shadow.bias = -0.001
+  spotLight.target.position.set(0, 1, 0)
+  scene.add(spotLight)
+  scene.add(spotLight.target)
 
-  const greenLight = new THREE.PointLight(0x00ff66, 0.8, 50)
-  greenLight.position.set(-5, 8, -3)
-  scene.add(greenLight)
+  // Cyan rim light from behind — silhouette outline (critical for depth)
+  const cyanRimLight = new THREE.DirectionalLight(0x00ddaa, 0.5)
+  cyanRimLight.position.set(-3, 2, -6)
+  scene.add(cyanRimLight)
 
-  const purpleLight = new THREE.PointLight(0x9944ff, 0.6, 50)
-  purpleLight.position.set(5, 6, 5)
-  scene.add(purpleLight)
+  // Purple accent from gizmo tentacle side
+  const purpleAccent = new THREE.PointLight(0x9944ff, 0.5, 30)
+  purpleAccent.position.set(4, 5, 4)
+  scene.add(purpleAccent)
+
+  // Faint bio-luminescent green fill
+  const fillGreen = new THREE.DirectionalLight(0x556b5a, 0.2)
+  fillGreen.position.set(3, 1, -4)
+  scene.add(fillGreen)
 
   // Grid (default off)
   gridHelper = new THREE.GridHelper(20, 40, 0x0a3a1a, 0x061a0e)
@@ -97,15 +117,21 @@ function initScene() {
   gridHelper.visible = false
   scene.add(gridHelper)
 
-  // Post-processing
+  // Post-processing: RenderPass -> SSAOPass -> UnrealBloomPass
   composer = new EffectComposer(renderer)
   composer.addPass(new RenderPass(scene, camera))
 
+  ssaoPass = new SSAOPass(scene, camera, w, h)
+  ssaoPass.kernelRadius = 8
+  ssaoPass.minDistance = 0.005
+  ssaoPass.maxDistance = 0.1
+  composer.addPass(ssaoPass)
+
   const bloom = new UnrealBloomPass(
     new THREE.Vector2(w, h),
-    0.8,  // strength
-    0.4,  // radius
-    0.6   // threshold
+    0.35,  // strength — visible glow on emissive + rim
+    0.5,   // radius
+    0.55   // threshold — low enough for tentacles + rim to bloom
   )
   composer.addPass(bloom)
 
@@ -302,11 +328,20 @@ function initGizmo() {
 
   gizmoScene.add(new THREE.AmbientLight(0xffffff, 1))
 
+  // Purple point light at cube center — illuminates tentacles
+  const gizmoPurpleLight = new THREE.PointLight(0x9b30ff, 2.0, 8)
+  gizmoPurpleLight.position.set(0, 0, 0)
+  gizmoScene.add(gizmoPurpleLight)
+
   // Tentacles reaching from deep behind the frame to grab the cube
-  const tentacleMat = new THREE.MeshBasicMaterial({
-    color: 0x4a0080,
+  const tentacleMat = new THREE.MeshStandardMaterial({
+    color: 0x7a00ff,
+    emissive: 0x9b30ff,
+    emissiveIntensity: 1.5,
     transparent: true,
-    opacity: 0.55,
+    opacity: 0.7,
+    roughness: 0.4,
+    metalness: 0.3,
   })
 
   let seed = 42
@@ -686,6 +721,16 @@ function animate() {
 
   controls.update()
 
+  // Update stone idol material time uniforms
+  if (loadedMesh) {
+    const mat = loadedMesh.material as THREE.MeshStandardMaterial
+    if (mat.userData.timeUniform) mat.userData.timeUniform.value = time
+  }
+  if (resultMesh) {
+    const mat = resultMesh.material as THREE.MeshStandardMaterial
+    if (mat.userData.timeUniform) mat.userData.timeUniform.value = time
+  }
+
   // Animate markers
   markerGroup.children.forEach((obj) => {
     const id = obj.userData.markerId as string
@@ -802,13 +847,213 @@ function animate() {
       t.mesh.geometry.dispose()
       t.mesh.geometry = newGeo
 
-      // Pulse opacity — subdued, more visible when reaching
-      const mat = t.mesh.material as THREE.MeshBasicMaterial
-      mat.opacity = 0.2 + 0.3 * reach * Math.abs(Math.sin(time * t.speed * 0.5 + t.phase))
+      // Pulse opacity + emissive glow — more vivid when reaching
+      const mat = t.mesh.material as THREE.MeshStandardMaterial
+      mat.opacity = 0.3 + 0.5 * reach * Math.abs(Math.sin(time * t.speed * 0.5 + t.phase))
+      mat.emissiveIntensity = 1.0 + 1.5 * reach * Math.abs(Math.sin(time * t.speed * 0.7 + t.phase))
     }
 
     gizmoRenderer.render(gizmoScene, gizmoCamera)
   }
+}
+
+function createStoneIdolMaterial(variant: 'primary' | 'result'): THREE.MeshStandardMaterial {
+  const isPrimary = variant === 'primary'
+  const material = new THREE.MeshStandardMaterial({
+    color: isPrimary ? 0x3D4D3D : 0x354535,
+    emissive: isPrimary ? 0x1a2e1a : 0x0f1f0f,
+    emissiveIntensity: isPrimary ? 0.12 : 0.08,
+    roughness: isPrimary ? 0.9 : 0.85,
+    metalness: 0.2,
+    flatShading: false,
+  })
+
+  const timeUniform = { value: 0.0 }
+  material.userData.timeUniform = timeUniform
+
+  material.onBeforeCompile = (shader) => {
+    shader.uniforms.uTime = timeUniform
+
+    // --- Vertex shader: pass world position + world normal ---
+    shader.vertexShader = shader.vertexShader.replace(
+      '#include <common>',
+      `#include <common>
+varying vec3 vWorldPos;
+varying vec3 vWorldNormal;`
+    )
+    shader.vertexShader = shader.vertexShader.replace(
+      '#include <fog_vertex>',
+      `#include <fog_vertex>
+vWorldPos = (modelMatrix * vec4(position, 1.0)).xyz;
+vWorldNormal = normalize(mat3(modelMatrix) * normal);`
+    )
+
+    // --- Fragment preamble: time uniform + simplex noise ---
+    shader.fragmentShader = shader.fragmentShader.replace(
+      '#include <common>',
+      `#include <common>
+uniform float uTime;
+varying vec3 vWorldPos;
+varying vec3 vWorldNormal;
+
+// Ashima Arts simplex 3D noise
+vec3 mod289(vec3 x) { return x - floor(x * (1.0 / 289.0)) * 289.0; }
+vec4 mod289(vec4 x) { return x - floor(x * (1.0 / 289.0)) * 289.0; }
+vec4 permute(vec4 x) { return mod289(((x*34.0)+1.0)*x); }
+vec4 taylorInvSqrt(vec4 r) { return 1.79284291400159 - 0.85373472095314 * r; }
+
+float snoise(vec3 v) {
+  const vec2 C = vec2(1.0/6.0, 1.0/3.0);
+  const vec4 D = vec4(0.0, 0.5, 1.0, 2.0);
+  vec3 i  = floor(v + dot(v, C.yyy));
+  vec3 x0 = v - i + dot(i, C.xxx);
+  vec3 g = step(x0.yzx, x0.xyz);
+  vec3 l = 1.0 - g;
+  vec3 i1 = min(g.xyz, l.zxy);
+  vec3 i2 = max(g.xyz, l.zxy);
+  vec3 x1 = x0 - i1 + C.xxx;
+  vec3 x2 = x0 - i2 + C.yyy;
+  vec3 x3 = x0 - D.yyy;
+  i = mod289(i);
+  vec4 p = permute(permute(permute(
+    i.z + vec4(0.0, i1.z, i2.z, 1.0))
+  + i.y + vec4(0.0, i1.y, i2.y, 1.0))
+  + i.x + vec4(0.0, i1.x, i2.x, 1.0));
+  float n_ = 0.142857142857;
+  vec3 ns = n_ * D.wyz - D.xzx;
+  vec4 j = p - 49.0 * floor(p * ns.z * ns.z);
+  vec4 x_ = floor(j * ns.z);
+  vec4 y_ = floor(j - 7.0 * x_);
+  vec4 x = x_ * ns.x + ns.yyyy;
+  vec4 y = y_ * ns.x + ns.yyyy;
+  vec4 h = 1.0 - abs(x) - abs(y);
+  vec4 b0 = vec4(x.xy, y.xy);
+  vec4 b1 = vec4(x.zw, y.zw);
+  vec4 s0 = floor(b0)*2.0 + 1.0;
+  vec4 s1 = floor(b1)*2.0 + 1.0;
+  vec4 sh = -step(h, vec4(0.0));
+  vec4 a0 = b0.xzyw + s0.xzyw*sh.xxyy;
+  vec4 a1 = b1.xzyw + s1.xzyw*sh.zzww;
+  vec3 p0 = vec3(a0.xy,h.x);
+  vec3 p1 = vec3(a0.zw,h.y);
+  vec3 p2 = vec3(a1.xy,h.z);
+  vec3 p3 = vec3(a1.zw,h.w);
+  vec4 norm = taylorInvSqrt(vec4(dot(p0,p0), dot(p1,p1), dot(p2,p2), dot(p3,p3)));
+  p0 *= norm.x; p1 *= norm.y; p2 *= norm.z; p3 *= norm.w;
+  vec4 m = max(0.6 - vec4(dot(x0,x0), dot(x1,x1), dot(x2,x2), dot(x3,x3)), 0.0);
+  m = m * m;
+  return 42.0 * dot(m*m, vec4(dot(p0,x0), dot(p1,x1), dot(p2,x2), dot(p3,x3)));
+}`
+    )
+
+    // --- Color modulation: stone layers + animated slime + cheap AO + purple reflection ---
+    shader.fragmentShader = shader.fragmentShader.replace(
+      '#include <color_fragment>',
+      `#include <color_fragment>
+{
+  vec3 wp = vWorldPos;
+
+  // Layer 1: Large-scale stone color variation (warm <-> cool grey)
+  float n1 = snoise(wp * 0.7);
+  diffuseColor.rgb = mix(
+    diffuseColor.rgb * vec3(1.08, 1.0, 0.92),
+    diffuseColor.rgb * vec3(0.88, 0.93, 1.08),
+    n1 * 0.5 + 0.5
+  );
+
+  // Layer 2: Moss patches — dark green overlay, 50% max
+  float n2 = snoise(wp * 2.5);
+  float mossMask = smoothstep(0.05, 0.55, n2);
+  diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.10, 0.16, 0.06), mossMask * 0.5);
+
+  // Layer 3: Fine stone grain — brightness variation
+  float n3 = snoise(wp * 8.0);
+  diffuseColor.rgb += n3 * 0.04;
+
+  // Layer 4: Verdigris spots — teal patina
+  float n4 = snoise(wp * 4.0);
+  float verdigrisMask = smoothstep(0.5, 0.7, n4);
+  diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.25, 0.50, 0.42), verdigrisMask);
+
+  // Layer 5: Animated slime/seaweed — slow organic shifting
+  float slimeNoise = snoise(wp * 3.0 + vec3(uTime * 0.04, uTime * 0.02, uTime * 0.03));
+  float slimeMask = smoothstep(0.2, 0.7, slimeNoise);
+  vec3 slimeColor = mix(vec3(0.08, 0.14, 0.05), vec3(0.15, 0.10, 0.04), slimeNoise * 0.5 + 0.5);
+  diffuseColor.rgb = mix(diffuseColor.rgb, slimeColor, slimeMask * 0.25);
+
+  // Layer 6: Cheap AO — multi-octave noise crevice darkening
+  float crevice = snoise(wp * 5.0) * 0.5 + snoise(wp * 10.0) * 0.3 + snoise(wp * 20.0) * 0.2;
+  float aoFactor = smoothstep(-0.4, 0.3, crevice);
+  diffuseColor.rgb *= mix(0.50, 1.0, aoFactor);
+
+  // Layer 7: Subtle purple emissive reflection from tentacles
+  float purpleNoise = snoise(wp * 1.5 + vec3(0.0, uTime * 0.06, 0.0));
+  float purpleMask = smoothstep(0.6, 0.9, purpleNoise);
+  diffuseColor.rgb += vec3(0.06, 0.0, 0.10) * purpleMask;
+}`
+    )
+
+    // --- Normal perturbation: scaly / rough stone grain ---
+    shader.fragmentShader = shader.fragmentShader.replace(
+      '#include <normal_fragment_maps>',
+      `#include <normal_fragment_maps>
+{
+  vec3 wp = vWorldPos;
+  float nA = snoise(wp * 15.0);
+  float nB = snoise(wp * 15.0 + vec3(17.3, 0.0, 0.0));
+  float nC = snoise(wp * 15.0 + vec3(0.0, 0.0, 31.7));
+  normal = normalize(normal + vec3(nA, nB, nC) * 0.12);
+}`
+    )
+
+    // --- Roughness modulation: verdigris smooth + wet slime patches ---
+    shader.fragmentShader = shader.fragmentShader.replace(
+      '#include <roughnessmap_fragment>',
+      `#include <roughnessmap_fragment>
+{
+  vec3 wp = vWorldPos;
+  float n4 = snoise(wp * 4.0);
+  float verdigrisMask = smoothstep(0.5, 0.7, n4);
+  roughnessFactor = mix(0.98, 0.82, verdigrisMask);
+
+  // Wet slime patches — glistening low-roughness spots
+  float slimeWet = snoise(wp * 3.0 + vec3(uTime * 0.04, uTime * 0.02, uTime * 0.03));
+  float wetMask = smoothstep(0.6, 0.85, slimeWet);
+  roughnessFactor = mix(roughnessFactor, 0.08, wetMask * 0.5);
+}`
+    )
+
+    // --- Enhanced dual rim lighting: cyan + purple ---
+    shader.fragmentShader = shader.fragmentShader.replace(
+      '#include <opaque_fragment>',
+      `// Enhanced dual rim lighting
+vec3 viewDir = normalize(cameraPosition - vWorldPos);
+float rim = 1.0 - max(dot(viewDir, vWorldNormal), 0.0);
+float rimPow = pow(rim, 2.5);
+
+// Cyan rim — primary silhouette glow (#00FFBB)
+float cyanPulse = 0.85 + 0.15 * sin(uTime * 1.5);
+vec3 cyanRim = vec3(0.0, 0.9, 0.6) * rimPow * 0.45 * cyanPulse;
+
+// Purple rim — secondary eldritch glow
+float purplePulse = 0.8 + 0.2 * sin(uTime * 2.0 + 1.5);
+vec3 purpleRim = vec3(0.4, 0.0, 0.7) * rimPow * 0.2 * purplePulse;
+
+outgoingLight += cyanRim + purpleRim;
+
+// Reproduce opaque_fragment
+#ifdef OPAQUE
+diffuseColor.a = 1.0;
+#endif
+#ifdef USE_TRANSMISSION
+diffuseColor.a *= material.transmissionAlpha;
+#endif
+gl_FragColor = vec4(outgoingLight, diffuseColor.a);`
+    )
+  }
+
+  material.customProgramCacheKey = () => variant
+  return material
 }
 
 function loadSTL(file: File) {
@@ -845,17 +1090,12 @@ function loadSTL(file: File) {
     const newBox = geometry.boundingBox!
     geometry.translate(0, -newBox.min.y, 0)
 
-    const material = new THREE.MeshStandardMaterial({
-      color: 0x00e0c4,
-      emissive: 0x00e0c4,
-      emissiveIntensity: 0.6,
-      metalness: 0.2,
-      roughness: 0.5,
-      flatShading: false,
-    })
+    const material = createStoneIdolMaterial('primary')
 
     geometry.computeVertexNormals()
     loadedMesh = new THREE.Mesh(geometry, material)
+    loadedMesh.castShadow = true
+    loadedMesh.receiveShadow = true
     scene.add(loadedMesh)
     store.stlMesh = loadedMesh
 
@@ -886,17 +1126,13 @@ function displayResult(buffer: ArrayBuffer) {
   const geometry = loader.parse(buffer)
   geometry.computeVertexNormals()
 
-  const material = new THREE.MeshStandardMaterial({
-    color: 0x00e0c4,
-    emissive: 0x00e0c4,
-    emissiveIntensity: 0.6,
-    metalness: 0.4,
-    roughness: 0.3,
-    transparent: true,
-    opacity: 0.9,
-  })
+  const material = createStoneIdolMaterial('result')
+  material.transparent = true
+  material.opacity = 0.9
 
   resultMesh = new THREE.Mesh(geometry, material)
+  resultMesh.castShadow = true
+  resultMesh.receiveShadow = true
   scene.add(resultMesh)
 
   // Fade original mesh to 15% opacity
