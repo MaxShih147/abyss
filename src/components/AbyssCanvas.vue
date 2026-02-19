@@ -28,6 +28,10 @@ let gizmoScene: THREE.Scene
 let gizmoCamera: THREE.OrthographicCamera
 let gizmoCube: THREE.Mesh
 let gizmoRaycaster: THREE.Raycaster
+const gizmoTentacles: { mesh: THREE.Mesh, origin: THREE.Vector3, dir: THREE.Vector3, phase: number, perpA: THREE.Vector3, perpB: THREE.Vector3, baseRadius: number }[] = []
+let gizmoDragging = false
+let gizmoDidDrag = false
+let gizmoDragOffset = { x: 0, y: 0 }
 
 // Track 3D objects mapped by marker ID
 const markerObjects = new Map<string, THREE.Object3D>()
@@ -114,32 +118,138 @@ function initScene() {
 }
 
 function makeGizmoFaceTexture(label: string, color: string, bgColor: string): THREE.CanvasTexture {
-  const size = 128
+  const size = 256
+  const cx = size / 2, cy = size / 2
   const canvas = document.createElement('canvas')
   canvas.width = size
   canvas.height = size
   const ctx = canvas.getContext('2d')!
-  // Background
+
+  // Dark void background
   ctx.fillStyle = bgColor
   ctx.fillRect(0, 0, size, size)
-  // Border
+
+  // Eldritch veins radiating from center
+  ctx.save()
+  ctx.globalAlpha = 0.12
+  for (let i = 0; i < 8; i++) {
+    const angle = (i / 8) * Math.PI * 2 + 0.3
+    ctx.beginPath()
+    ctx.moveTo(cx, cy)
+    const wobble1 = Math.sin(i * 2.7) * 20
+    const wobble2 = Math.cos(i * 1.9) * 15
+    ctx.bezierCurveTo(
+      cx + Math.cos(angle) * 40 + wobble1, cy + Math.sin(angle) * 40 + wobble2,
+      cx + Math.cos(angle) * 90 - wobble2, cy + Math.sin(angle) * 90 + wobble1,
+      cx + Math.cos(angle) * 130, cy + Math.sin(angle) * 130
+    )
+    ctx.strokeStyle = color
+    ctx.lineWidth = 1.5
+    ctx.stroke()
+  }
+  ctx.restore()
+
+  // Outer eye shape (almond)
+  ctx.save()
+  ctx.beginPath()
+  ctx.moveTo(cx - 55, cy)
+  ctx.bezierCurveTo(cx - 30, cy - 38, cx + 30, cy - 38, cx + 55, cy)
+  ctx.bezierCurveTo(cx + 30, cy + 38, cx - 30, cy + 38, cx - 55, cy)
+  ctx.closePath()
   ctx.strokeStyle = color
-  ctx.lineWidth = 3
-  ctx.strokeRect(2, 2, size - 4, size - 4)
-  // Label
+  ctx.lineWidth = 2.5
+  ctx.shadowColor = color
+  ctx.shadowBlur = 10
+  ctx.stroke()
+  ctx.restore()
+
+  // Iris circle
+  ctx.save()
+  ctx.beginPath()
+  ctx.arc(cx, cy, 22, 0, Math.PI * 2)
+  ctx.strokeStyle = color
+  ctx.lineWidth = 1.5
+  ctx.shadowColor = color
+  ctx.shadowBlur = 6
+  ctx.stroke()
+  ctx.restore()
+
+  // Pupil — vertical slit
+  ctx.save()
+  ctx.beginPath()
+  ctx.ellipse(cx, cy, 6, 20, 0, 0, Math.PI * 2)
   ctx.fillStyle = color
-  ctx.font = 'bold 36px Cormorant Garamond, Georgia, serif'
+  ctx.shadowColor = color
+  ctx.shadowBlur = 10
+  ctx.fill()
+  ctx.restore()
+
+  // Direction letter — prominent, readable, matching UI display font
+  ctx.save()
+  ctx.fillStyle = '#e8e0f0'
+  ctx.font = 'bold 42px Cormorant Garamond, Georgia, serif'
   ctx.textAlign = 'center'
   ctx.textBaseline = 'middle'
-  ctx.fillText(label, size / 2, size / 2)
+  ctx.shadowColor = color
+  ctx.shadowBlur = 14
+  ctx.fillText(label, cx, cy + 2)
+  ctx.restore()
+
+  // Corner tentacle curls
+  ctx.save()
+  ctx.globalAlpha = 0.2
+  ctx.strokeStyle = color
+  ctx.lineWidth = 1.5
+  const corners = [[12, 12, 0], [size - 12, 12, 1], [size - 12, size - 12, 2], [12, size - 12, 3]]
+  for (const [x, y, idx] of corners) {
+    const a = (idx as number) * Math.PI * 0.5 + Math.PI * 0.25
+    ctx.beginPath()
+    ctx.moveTo(x as number, y as number)
+    ctx.quadraticCurveTo(
+      (x as number) + Math.cos(a) * 25, (y as number) + Math.sin(a) * 25,
+      (x as number) + Math.cos(a + 1.2) * 18, (y as number) + Math.sin(a + 1.2) * 18
+    )
+    ctx.stroke()
+  }
+  ctx.restore()
+
   const tex = new THREE.CanvasTexture(canvas)
   tex.needsUpdate = true
   return tex
 }
 
+function buildTaperedTube(curve: THREE.CatmullRomCurve3, tubSegs: number, radSegs: number, radiusBase: number, radiusTip: number): THREE.BufferGeometry {
+  const geo = new THREE.TubeGeometry(curve, tubSegs, 1, radSegs, false)
+  const pos = geo.attributes.position
+  const frames = curve.computeFrenetFrames(tubSegs, false)
+  const vPerRing = radSegs + 1
+  for (let i = 0; i <= tubSegs; i++) {
+    const t = i / tubSegs
+    const radius = radiusBase + (radiusTip - radiusBase) * t
+    const center = curve.getPointAt(t)
+    for (let j = 0; j < vPerRing; j++) {
+      const idx = i * vPerRing + j
+      const vx = pos.getX(idx)
+      const vy = pos.getY(idx)
+      const vz = pos.getZ(idx)
+      // Get offset from center, normalize, scale by desired radius
+      const dx = vx - center.x
+      const dy = vy - center.y
+      const dz = vz - center.z
+      const len = Math.sqrt(dx * dx + dy * dy + dz * dz)
+      if (len > 0.0001) {
+        pos.setXYZ(idx, center.x + (dx / len) * radius, center.y + (dy / len) * radius, center.z + (dz / len) * radius)
+      }
+    }
+  }
+  pos.needsUpdate = true
+  geo.computeVertexNormals()
+  return geo
+}
+
 function initGizmo() {
   const el = gizmoContainer.value!
-  const size = 120
+  const size = 160
 
   gizmoRenderer = new THREE.WebGLRenderer({ antialias: true, alpha: true })
   gizmoRenderer.setSize(size, size)
@@ -148,34 +258,124 @@ function initGizmo() {
   el.appendChild(gizmoRenderer.domElement)
 
   gizmoScene = new THREE.Scene()
-  gizmoCamera = new THREE.OrthographicCamera(-1.8, 1.8, 1.8, -1.8, 0.1, 100)
+  gizmoCamera = new THREE.OrthographicCamera(-2.2, 2.2, 2.2, -2.2, 0.1, 100)
   gizmoCamera.position.set(3, 3, 3)
   gizmoCamera.lookAt(0, 0, 0)
 
-  // Cthulhu-themed face labels & colors
+  // Cthulhu eye faces
   const faces = [
-    { label: 'R', color: '#ff4466', bg: 'rgba(40,8,16,0.9)' },   // +X
-    { label: 'L', color: '#ff4466', bg: 'rgba(40,8,16,0.9)' },   // -X
-    { label: 'T', color: '#00e0c4', bg: 'rgba(8,32,28,0.9)' },   // +Y
-    { label: 'B', color: '#00e0c4', bg: 'rgba(8,32,28,0.9)' },   // -Y
-    { label: 'F', color: '#a855f7', bg: 'rgba(24,8,40,0.9)' },   // +Z
-    { label: 'K', color: '#a855f7', bg: 'rgba(24,8,40,0.9)' },   // -Z
+    { label: 'R', color: '#ff4466', bg: '#1a0610' },   // +X
+    { label: 'L', color: '#ff4466', bg: '#1a0610' },   // -X
+    { label: 'T', color: '#00e0c4', bg: '#061a16' },   // +Y
+    { label: 'B', color: '#00e0c4', bg: '#061a16' },   // -Y
+    { label: 'F', color: '#a855f7', bg: '#0e0620' },   // +Z
+    { label: 'K', color: '#a855f7', bg: '#0e0620' },   // -Z
   ]
   const materials = faces.map(f =>
     new THREE.MeshBasicMaterial({ map: makeGizmoFaceTexture(f.label, f.color, f.bg) })
   )
 
-  gizmoCube = new THREE.Mesh(new THREE.BoxGeometry(1.4, 1.4, 1.4), materials)
+  gizmoCube = new THREE.Mesh(new THREE.BoxGeometry(1.6, 1.6, 1.6), materials)
   gizmoScene.add(gizmoCube)
 
-  // Ambient light for the gizmo
   gizmoScene.add(new THREE.AmbientLight(0xffffff, 1))
+
+  // 3D tentacles sprouting from cube edges — tapered, varied thickness
+  const tentacleMat = new THREE.MeshBasicMaterial({
+    color: 0x9b30ff,
+    transparent: true,
+    opacity: 0.85,
+  })
+
+  // Edge midpoints at half-cube-size = 0.8
+  const edgeOrigins: [number, number, number, number, number, number][] = [
+    [0.8, 0.8, 0,    1, 1, 0],
+    [-0.8, 0.8, 0,   -1, 1, 0],
+    [0, 0.8, 0.8,    0, 1, 1],
+    [0, 0.8, -0.8,   0, 1, -1],
+    [0.8, -0.8, 0,   1, -1, 0],
+    [-0.8, -0.8, 0,  -1, -1, 0],
+    [0, -0.8, 0.8,   0, -1, 1],
+    [0, -0.8, -0.8,  0, -1, -1],
+    [0.8, 0, 0.8,    1, 0, 1],
+    [-0.8, 0, 0.8,   -1, 0, 1],
+    [0.8, 0, -0.8,   1, 0, -1],
+    [-0.8, 0, -0.8,  -1, 0, -1],
+  ]
+
+  // Per-tentacle thickness variation: some thick, some thin
+  const radiusVariants = [0.07, 0.05, 0.06, 0.04, 0.065, 0.045, 0.055, 0.07, 0.04, 0.06, 0.05, 0.065]
+
+  for (let i = 0; i < edgeOrigins.length; i++) {
+    const [ox, oy, oz, ddx, ddy, ddz] = edgeOrigins[i]
+    const origin = new THREE.Vector3(ox, oy, oz)
+    const dir = new THREE.Vector3(ddx, ddy, ddz).normalize()
+    const phase = i * 1.7
+    const baseRadius = radiusVariants[i]
+
+    // Pre-compute stable perpendicular axes
+    const arbitrary = Math.abs(dir.y) < 0.9 ? new THREE.Vector3(0, 1, 0) : new THREE.Vector3(1, 0, 0)
+    const perpA = new THREE.Vector3().crossVectors(dir, arbitrary).normalize()
+    const perpB = new THREE.Vector3().crossVectors(dir, perpA).normalize()
+
+    // Initial geometry (replaced every frame)
+    const points: THREE.Vector3[] = []
+    const segs = 12
+    for (let s = 0; s <= segs; s++) {
+      const t = s / segs
+      points.push(origin.clone().addScaledVector(dir, t * 0.4))
+    }
+    const curve = new THREE.CatmullRomCurve3(points)
+    const geo = buildTaperedTube(curve, segs, 6, baseRadius, baseRadius * 0.15)
+    const mesh = new THREE.Mesh(geo, tentacleMat.clone())
+    gizmoScene.add(mesh)
+    gizmoTentacles.push({ mesh, origin: origin.clone(), dir: dir.clone(), phase, perpA, perpB, baseRadius })
+  }
 
   gizmoRaycaster = new THREE.Raycaster()
   gizmoRenderer.domElement.addEventListener('click', onGizmoClick)
+
+  // Dragging support
+  el.addEventListener('mousedown', onGizmoDragStart)
+  document.addEventListener('mousemove', onGizmoDragMove)
+  document.addEventListener('mouseup', onGizmoDragEnd)
+}
+
+function onGizmoDragStart(event: MouseEvent) {
+  const el = gizmoContainer.value!
+  const rect = el.getBoundingClientRect()
+  gizmoDragging = true
+  gizmoDidDrag = false
+  gizmoDragOffset.x = event.clientX - rect.left
+  gizmoDragOffset.y = event.clientY - rect.top
+  el.style.cursor = 'grabbing'
+  event.preventDefault()
+}
+
+function onGizmoDragMove(event: MouseEvent) {
+  if (!gizmoDragging) return
+  gizmoDidDrag = true
+  const el = gizmoContainer.value!
+  const parent = el.parentElement!
+  const parentRect = parent.getBoundingClientRect()
+  let newLeft = event.clientX - parentRect.left - gizmoDragOffset.x
+  let newTop = event.clientY - parentRect.top - gizmoDragOffset.y
+  newLeft = Math.max(0, Math.min(parentRect.width - el.offsetWidth, newLeft))
+  newTop = Math.max(0, Math.min(parentRect.height - el.offsetHeight, newTop))
+  el.style.left = newLeft + 'px'
+  el.style.top = newTop + 'px'
+  el.style.right = 'auto'
+}
+
+function onGizmoDragEnd() {
+  if (!gizmoDragging) return
+  gizmoDragging = false
+  const el = gizmoContainer.value
+  if (el) el.style.cursor = 'grab'
 }
 
 function onGizmoClick(event: MouseEvent) {
+  if (gizmoDidDrag) return  // Was a drag, not a click
   const rect = gizmoRenderer.domElement.getBoundingClientRect()
   const mouse2 = new THREE.Vector2(
     ((event.clientX - rect.left) / rect.width) * 2 - 1,
@@ -497,9 +697,50 @@ function animate() {
 
   composer.render()
 
-  // Sync gizmo cube rotation with main camera
+  // Animate gizmo tentacles + sync rotation
   if (gizmoCube && gizmoCamera) {
     gizmoCube.quaternion.copy(camera.quaternion).invert()
+
+    // Writhe tentacles — short, tapered, curling
+    for (const t of gizmoTentacles) {
+      const segs = 12
+      const points: THREE.Vector3[] = []
+      // Short breathing cycle
+      const breathe = 0.35 + 0.15 * Math.sin(time * 1.4 + t.phase)
+      for (let s = 0; s <= segs; s++) {
+        const frac = s / segs
+        const extension = frac * breathe
+        const p = t.origin.clone().addScaledVector(t.dir, extension)
+        // Lateral writhing
+        const wiggle1 = Math.sin(time * 2.8 + t.phase + frac * Math.PI * 3) * 0.12 * frac * frac
+        const wiggle2 = Math.cos(time * 2.0 + t.phase * 1.3 + frac * Math.PI * 2) * 0.1 * frac * frac
+        p.addScaledVector(t.perpA, wiggle1)
+        p.addScaledVector(t.perpB, wiggle2)
+        // Curl at tip
+        if (frac > 0.6) {
+          const curlFrac = (frac - 0.6) / 0.4
+          const curlStrength = curlFrac * curlFrac * 0.2 * (0.8 + 0.5 * Math.sin(time * 2.2 + t.phase))
+          p.addScaledVector(t.dir, -curlStrength)
+          const spiralAngle = time * 3.5 + t.phase + curlFrac * Math.PI * 1.5
+          p.addScaledVector(t.perpA, Math.sin(spiralAngle) * curlStrength * 0.6)
+          p.addScaledVector(t.perpB, Math.cos(spiralAngle) * curlStrength * 0.6)
+        }
+        points.push(p)
+      }
+      const curve = new THREE.CatmullRomCurve3(points)
+      // Tapered: thick at base, thin at tip
+      const newGeo = buildTaperedTube(curve, segs, 6, t.baseRadius, t.baseRadius * 0.12)
+      t.mesh.geometry.dispose()
+      t.mesh.geometry = newGeo
+
+      // Rotate with cube
+      t.mesh.quaternion.copy(gizmoCube.quaternion)
+
+      // Pulse opacity
+      const mat = t.mesh.material as THREE.MeshBasicMaterial
+      mat.opacity = 0.5 + 0.35 * Math.sin(time * 1.5 + t.phase)
+    }
+
     gizmoRenderer.render(gizmoScene, gizmoCamera)
   }
 }
@@ -648,6 +889,9 @@ onBeforeUnmount(() => {
   renderer.dispose()
   composer.dispose()
   gizmoRenderer?.domElement.removeEventListener('click', onGizmoClick)
+  gizmoContainer.value?.removeEventListener('mousedown', onGizmoDragStart)
+  document.removeEventListener('mousemove', onGizmoDragMove)
+  document.removeEventListener('mouseup', onGizmoDragEnd)
   gizmoRenderer?.dispose()
 })
 </script>
@@ -671,13 +915,41 @@ onBeforeUnmount(() => {
   position: absolute;
   top: 16px;
   right: 16px;
-  width: 120px;
-  height: 120px;
-  border-radius: 12px;
-  overflow: hidden;
-  border: 1px solid rgba(168, 85, 247, 0.15);
-  background: rgba(4, 4, 7, 0.5);
-  cursor: pointer;
+  width: 160px;
+  height: 160px;
+  border-radius: 14px;
+  overflow: visible;
+  border: 1.5px solid rgba(168, 85, 247, 0.4);
+  background: rgba(4, 4, 7, 0.7);
+  cursor: grab;
   z-index: 10;
+  box-shadow:
+    0 0 30px rgba(155, 48, 255, 0.3),
+    0 0 60px rgba(155, 48, 255, 0.15),
+    0 0 100px rgba(155, 48, 255, 0.08),
+    inset 0 0 20px rgba(0, 0, 0, 0.6);
+  animation: gizmo-pulse 3s ease-in-out infinite;
+  user-select: none;
+}
+.gizmo-wrap canvas {
+  border-radius: 14px;
+}
+@keyframes gizmo-pulse {
+  0%, 100% {
+    border-color: rgba(155, 48, 255, 0.35);
+    box-shadow:
+      0 0 25px rgba(155, 48, 255, 0.25),
+      0 0 50px rgba(155, 48, 255, 0.12),
+      0 0 80px rgba(155, 48, 255, 0.06),
+      inset 0 0 20px rgba(0, 0, 0, 0.6);
+  }
+  50% {
+    border-color: rgba(155, 48, 255, 0.7);
+    box-shadow:
+      0 0 40px rgba(155, 48, 255, 0.45),
+      0 0 80px rgba(155, 48, 255, 0.25),
+      0 0 120px rgba(155, 48, 255, 0.12),
+      inset 0 0 20px rgba(0, 0, 0, 0.6);
+  }
 }
 </style>
