@@ -126,11 +126,11 @@ function initScene() {
   composer.addPass(ssaoPass)
 
   outlinePass = new OutlinePass(new THREE.Vector2(w, h), scene, camera)
-  outlinePass.edgeStrength = 2.5
-  outlinePass.edgeGlow = 0.5
-  outlinePass.edgeThickness = 1.2
-  outlinePass.visibleEdgeColor.set(0x9b30ff)
-  outlinePass.hiddenEdgeColor.set(0x4a0080)
+  outlinePass.edgeStrength = 3.0
+  outlinePass.edgeGlow = 1.2
+  outlinePass.edgeThickness = 2.5
+  outlinePass.visibleEdgeColor.set(0x5a1a8a)
+  outlinePass.hiddenEdgeColor.set(0x2a0845)
   outlinePass.pulsePeriod = 3
   composer.addPass(outlinePass)
 
