@@ -97,7 +97,7 @@ function initScene() {
   scene.add(spotLight.target)
 
   // Cyan rim light from behind — silhouette outline (critical for depth)
-  const cyanRimLight = new THREE.DirectionalLight(0x00ddaa, 0.5)
+  const cyanRimLight = new THREE.DirectionalLight(0x00ddaa, 0.8)
   cyanRimLight.position.set(-3, 2, -6)
   scene.add(cyanRimLight)
 
@@ -107,7 +107,7 @@ function initScene() {
   scene.add(purpleAccent)
 
   // Faint bio-luminescent green fill
-  const fillGreen = new THREE.DirectionalLight(0x556b5a, 0.2)
+  const fillGreen = new THREE.DirectionalLight(0x556b5a, 0.35)
   fillGreen.position.set(3, 1, -4)
   scene.add(fillGreen)
 
