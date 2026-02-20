@@ -29,12 +29,8 @@ let gizmoRenderer: THREE.WebGLRenderer
 let gizmoScene: THREE.Scene
 let gizmoCamera: THREE.OrthographicCamera
 let gizmoCube: THREE.Mesh
+let gizmoEdgeGlow: THREE.LineSegments
 let gizmoRaycaster: THREE.Raycaster
-const gizmoTentacles: {
-  mesh: THREE.Mesh, origin: THREE.Vector3, grabTarget: THREE.Vector3,
-  curlDir: THREE.Vector3, phase: number, perpA: THREE.Vector3, perpB: THREE.Vector3,
-  baseRadius: number, speed: number, reachDist: number
-}[] = []
 let gizmoDragging = false
 let gizmoDidDrag = false
 let gizmoDragOffset = { x: 0, y: 0 }
@@ -266,35 +262,6 @@ function makeGizmoFaceTexture(label: string, color: string, bgColor: string): TH
   return tex
 }
 
-function buildTaperedTube(curve: THREE.CatmullRomCurve3, tubSegs: number, radSegs: number, radiusBase: number, radiusTip: number): THREE.BufferGeometry {
-  const geo = new THREE.TubeGeometry(curve, tubSegs, 1, radSegs, false)
-  const pos = geo.attributes.position
-  const frames = curve.computeFrenetFrames(tubSegs, false)
-  const vPerRing = radSegs + 1
-  for (let i = 0; i <= tubSegs; i++) {
-    const t = i / tubSegs
-    const radius = radiusBase + (radiusTip - radiusBase) * t
-    const center = curve.getPointAt(t)
-    for (let j = 0; j < vPerRing; j++) {
-      const idx = i * vPerRing + j
-      const vx = pos.getX(idx)
-      const vy = pos.getY(idx)
-      const vz = pos.getZ(idx)
-      // Get offset from center, normalize, scale by desired radius
-      const dx = vx - center.x
-      const dy = vy - center.y
-      const dz = vz - center.z
-      const len = Math.sqrt(dx * dx + dy * dy + dz * dz)
-      if (len > 0.0001) {
-        pos.setXYZ(idx, center.x + (dx / len) * radius, center.y + (dy / len) * radius, center.z + (dz / len) * radius)
-      }
-    }
-  }
-  pos.needsUpdate = true
-  geo.computeVertexNormals()
-  return geo
-}
-
 function initGizmo() {
   const el = gizmoContainer.value!
   const size = 160
@@ -326,108 +293,18 @@ function initGizmo() {
   gizmoCube = new THREE.Mesh(new THREE.BoxGeometry(1.6, 1.6, 1.6), materials)
   gizmoScene.add(gizmoCube)
 
-  gizmoScene.add(new THREE.AmbientLight(0xffffff, 1))
-
-  // Purple point light at cube center — illuminates tentacles
-  const gizmoPurpleLight = new THREE.PointLight(0x9b30ff, 2.0, 8)
-  gizmoPurpleLight.position.set(0, 0, 0)
-  gizmoScene.add(gizmoPurpleLight)
-
-  // Tentacles reaching from deep behind the frame to grab the cube
-  const tentacleMat = new THREE.MeshStandardMaterial({
-    color: 0x7a00ff,
-    emissive: 0x9b30ff,
-    emissiveIntensity: 1.5,
+  // Purple edge glow outline
+  const edgesGeo = new THREE.EdgesGeometry(new THREE.BoxGeometry(1.62, 1.62, 1.62))
+  const edgeMat = new THREE.LineBasicMaterial({
+    color: 0xb266ff,
     transparent: true,
-    opacity: 0.7,
-    roughness: 0.4,
-    metalness: 0.3,
+    opacity: 0.9,
+    linewidth: 1,
   })
+  gizmoEdgeGlow = new THREE.LineSegments(edgesGeo, edgeMat)
+  gizmoScene.add(gizmoEdgeGlow)
 
-  let seed = 42
-  const rand = () => { seed = (seed * 16807 + 0) % 2147483647; return (seed - 1) / 2147483646 }
-
-  gizmoCamera.updateMatrixWorld()
-  const camRight = new THREE.Vector3()
-  const camUp = new THREE.Vector3()
-  const camFwd = new THREE.Vector3()
-  gizmoCamera.matrixWorld.extractBasis(camRight, camUp, camFwd)
-
-  const border = 2.3  // just outside viewport so they emerge from behind the frame
-  const cubeHalf = 0.8  // half cube size
-
-  // Spawn ~40 tentacles around all 4 edges
-  const totalTentacles = 40
-  for (let n = 0; n < totalTentacles; n++) {
-    // Pick a random point on the viewport border rectangle
-    const perimeter = rand() * 4  // which edge + position
-    let r: number, u: number
-    if (perimeter < 1) {        // top
-      r = (perimeter - 0.5) * 2; u = 1
-    } else if (perimeter < 2) { // right
-      r = 1; u = ((perimeter - 1) - 0.5) * 2
-    } else if (perimeter < 3) { // bottom
-      r = ((perimeter - 2) - 0.5) * -2; u = -1
-    } else {                    // left
-      r = -1; u = ((perimeter - 3) - 0.5) * -2
-    }
-    // Slight random offset along the edge
-    r += (rand() - 0.5) * 0.15
-    u += (rand() - 0.5) * 0.15
-
-    // Origin: on viewport border, pushed deep behind the screen
-    const origin = new THREE.Vector3()
-      .addScaledVector(camRight, r * border)
-      .addScaledVector(camUp, u * border)
-      .addScaledVector(camFwd, -(1.5 + rand() * 2.5))
-
-    // Grab target: a random point on the cube surface
-    // Pick a random axis-aligned face, then random position on that face
-    const face = Math.floor(rand() * 6)
-    let gx: number, gy: number, gz: number
-    const fp = (rand() - 0.5) * cubeHalf * 1.4
-    const fq = (rand() - 0.5) * cubeHalf * 1.4
-    switch (face) {
-      case 0: gx =  cubeHalf; gy = fp; gz = fq; break  // +X
-      case 1: gx = -cubeHalf; gy = fp; gz = fq; break  // -X
-      case 2: gx = fp; gy =  cubeHalf; gz = fq; break  // +Y
-      case 3: gx = fp; gy = -cubeHalf; gz = fq; break  // -Y
-      case 4: gx = fp; gy = fq; gz =  cubeHalf; break  // +Z
-      default: gx = fp; gy = fq; gz = -cubeHalf; break  // -Z
-    }
-    const grabTarget = new THREE.Vector3(gx, gy, gz)
-
-    // Curl direction: tangent to cube surface at grab point (perpendicular to face normal)
-    const faceNormals = [
-      new THREE.Vector3(1,0,0), new THREE.Vector3(-1,0,0),
-      new THREE.Vector3(0,1,0), new THREE.Vector3(0,-1,0),
-      new THREE.Vector3(0,0,1), new THREE.Vector3(0,0,-1),
-    ]
-    const faceN = faceNormals[face]
-    // Curl wraps over the edge: continue along approach direction projected onto face
-    const approach = grabTarget.clone().sub(origin).normalize()
-    const curlDir = approach.clone().sub(faceN.clone().multiplyScalar(approach.dot(faceN))).normalize()
-
-    const phase = rand() * Math.PI * 8
-    const baseRadius = 0.02 + rand() * 0.06   // 0.02 ~ 0.08
-    const speed = 0.6 + rand() * 1.4
-    const reachDist = origin.distanceTo(grabTarget)
-
-    // Perpendicular axes
-    const arbitrary = Math.abs(approach.y) < 0.9 ? new THREE.Vector3(0, 1, 0) : new THREE.Vector3(1, 0, 0)
-    const perpA = new THREE.Vector3().crossVectors(approach, arbitrary).normalize()
-    const perpB = new THREE.Vector3().crossVectors(approach, perpA).normalize()
-
-    // Placeholder geometry
-    const pts: THREE.Vector3[] = []
-    const segs = 14
-    for (let s = 0; s <= segs; s++) pts.push(origin.clone().lerp(grabTarget.clone(), s / segs))
-    const curve = new THREE.CatmullRomCurve3(pts)
-    const geo = buildTaperedTube(curve, segs, 6, baseRadius, baseRadius * 0.08)
-    const mesh = new THREE.Mesh(geo, tentacleMat.clone())
-    gizmoScene.add(mesh)
-    gizmoTentacles.push({ mesh, origin: origin.clone(), grabTarget, curlDir, phase, perpA, perpB, baseRadius, speed, reachDist })
-  }
+  gizmoScene.add(new THREE.AmbientLight(0xffffff, 1))
 
   gizmoRaycaster = new THREE.Raycaster()
   gizmoRenderer.domElement.addEventListener('click', onGizmoClick)
@@ -804,54 +681,14 @@ function animate() {
 
   composer.render()
 
-  // Animate gizmo tentacles + sync rotation
+  // Animate gizmo cube + edge glow
   if (gizmoCube && gizmoCamera) {
     gizmoCube.quaternion.copy(camera.quaternion).invert()
+    gizmoEdgeGlow.quaternion.copy(gizmoCube.quaternion)
 
-    // Tentacles reaching from behind the frame to grab the cube
-    for (const t of gizmoTentacles) {
-      const segs = 14
-      const points: THREE.Vector3[] = []
-      // Reach factor: how far toward the cube (0.7~1.0 oscillates = tries to grab then relaxes)
-      const reach = 0.75 + 0.25 * Math.sin(time * t.speed * 0.8 + t.phase)
-
-      for (let s = 0; s <= segs; s++) {
-        const frac = s / segs
-        // Smooth interpolation from origin to grabTarget
-        const eased = frac * frac * (3 - 2 * frac)  // smoothstep for natural curve
-        const p = t.origin.clone().lerp(t.grabTarget.clone(), eased * reach)
-
-        // Subtle lateral writhing along the body
-        const wiggleAmp = 0.08 * Math.sin(frac * Math.PI)  // max at middle, zero at ends
-        const w1 = Math.sin(time * t.speed * 1.8 + t.phase + frac * Math.PI * 4) * wiggleAmp
-        const w2 = Math.cos(time * t.speed * 1.3 + t.phase * 1.5 + frac * Math.PI * 3) * wiggleAmp * 0.7
-        p.addScaledVector(t.perpA, w1)
-        p.addScaledVector(t.perpB, w2)
-
-        // Tip curls around the cube surface (last 25%)
-        if (frac > 0.75) {
-          const curlFrac = (frac - 0.75) / 0.25
-          const curlAmount = curlFrac * curlFrac * 0.35 * reach
-          // Continue along the cube surface
-          p.addScaledVector(t.curlDir, curlAmount)
-          // Slight inward pressure (gripping the cube)
-          const grip = curlFrac * 0.08 * (1 + 0.5 * Math.sin(time * t.speed * 2 + t.phase))
-          const toCenter = t.grabTarget.clone().negate().normalize()
-          p.addScaledVector(toCenter, grip)
-        }
-        points.push(p)
-      }
-
-      const curve = new THREE.CatmullRomCurve3(points)
-      const newGeo = buildTaperedTube(curve, segs, 6, t.baseRadius, t.baseRadius * 0.06)
-      t.mesh.geometry.dispose()
-      t.mesh.geometry = newGeo
-
-      // Pulse opacity + emissive glow — more vivid when reaching
-      const mat = t.mesh.material as THREE.MeshStandardMaterial
-      mat.opacity = 0.3 + 0.5 * reach * Math.abs(Math.sin(time * t.speed * 0.5 + t.phase))
-      mat.emissiveIntensity = 1.0 + 1.5 * reach * Math.abs(Math.sin(time * t.speed * 0.7 + t.phase))
-    }
+    // Pulse edge glow opacity
+    const edgeMat = gizmoEdgeGlow.material as THREE.LineBasicMaterial
+    edgeMat.opacity = 0.5 + 0.4 * Math.sin(time * 2.0)
 
     gizmoRenderer.render(gizmoScene, gizmoCamera)
   }
@@ -1219,39 +1056,10 @@ onBeforeUnmount(() => {
   right: 16px;
   width: 160px;
   height: 160px;
-  border-radius: 14px;
   overflow: visible;
-  border: 1.5px solid rgba(168, 85, 247, 0.4);
-  background: rgba(4, 4, 7, 0.7);
+  background: transparent;
   cursor: grab;
   z-index: 10;
-  box-shadow:
-    0 0 30px rgba(155, 48, 255, 0.3),
-    0 0 60px rgba(155, 48, 255, 0.15),
-    0 0 100px rgba(155, 48, 255, 0.08),
-    inset 0 0 20px rgba(0, 0, 0, 0.6);
-  animation: gizmo-pulse 3s ease-in-out infinite;
   user-select: none;
-}
-.gizmo-wrap canvas {
-  border-radius: 14px;
-}
-@keyframes gizmo-pulse {
-  0%, 100% {
-    border-color: rgba(155, 48, 255, 0.35);
-    box-shadow:
-      0 0 25px rgba(155, 48, 255, 0.25),
-      0 0 50px rgba(155, 48, 255, 0.12),
-      0 0 80px rgba(155, 48, 255, 0.06),
-      inset 0 0 20px rgba(0, 0, 0, 0.6);
-  }
-  50% {
-    border-color: rgba(155, 48, 255, 0.7);
-    box-shadow:
-      0 0 40px rgba(155, 48, 255, 0.45),
-      0 0 80px rgba(155, 48, 255, 0.25),
-      0 0 120px rgba(155, 48, 255, 0.12),
-      inset 0 0 20px rgba(0, 0, 0, 0.6);
-  }
 }
 </style>
