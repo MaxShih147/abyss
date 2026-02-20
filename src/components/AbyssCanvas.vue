@@ -7,6 +7,7 @@ import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer
 import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js'
 import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js'
 import { SSAOPass } from 'three/examples/jsm/postprocessing/SSAOPass.js'
+import { OutlinePass } from 'three/examples/jsm/postprocessing/OutlinePass.js'
 import { useRitualStore } from '@/stores/ritual'
 
 const store = useRitualStore()
@@ -19,6 +20,7 @@ let scene: THREE.Scene
 let controls: OrbitControls
 let composer: EffectComposer
 let ssaoPass: InstanceType<typeof SSAOPass>
+let outlinePass: InstanceType<typeof OutlinePass>
 let raycaster: THREE.Raycaster
 let mouse: THREE.Vector2
 let animationId: number
@@ -122,6 +124,15 @@ function initScene() {
   ssaoPass.minDistance = 0.005
   ssaoPass.maxDistance = 0.1
   composer.addPass(ssaoPass)
+
+  outlinePass = new OutlinePass(new THREE.Vector2(w, h), scene, camera)
+  outlinePass.edgeStrength = 2.5
+  outlinePass.edgeGlow = 0.5
+  outlinePass.edgeThickness = 1.2
+  outlinePass.visibleEdgeColor.set(0x9b30ff)
+  outlinePass.hiddenEdgeColor.set(0x4a0080)
+  outlinePass.pulsePeriod = 3
+  composer.addPass(outlinePass)
 
   const bloom = new UnrealBloomPass(
     new THREE.Vector2(w, h),
@@ -934,6 +945,7 @@ function loadSTL(file: File) {
     loadedMesh.castShadow = true
     loadedMesh.receiveShadow = true
     scene.add(loadedMesh)
+    outlinePass.selectedObjects = [loadedMesh]
     store.stlMesh = loadedMesh
 
     // Clear existing markers when loading a new mesh
@@ -971,6 +983,7 @@ function displayResult(buffer: ArrayBuffer) {
   resultMesh.castShadow = true
   resultMesh.receiveShadow = true
   scene.add(resultMesh)
+  outlinePass.selectedObjects = [resultMesh]
 
   // Fade original mesh to 15% opacity
   if (loadedMesh) {
@@ -987,12 +1000,13 @@ function clearResult() {
     disposeObject(resultMesh)
     resultMesh = null
   }
-  // Restore original mesh opacity
+  // Restore original mesh opacity + outline
   if (loadedMesh) {
     const mat = loadedMesh.material as THREE.MeshStandardMaterial
     mat.transparent = false
     mat.opacity = 1.0
     mat.needsUpdate = true
+    outlinePass.selectedObjects = [loadedMesh]
   }
 }
 
